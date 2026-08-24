@@ -33,11 +33,11 @@ async function withWorker<T>(
   queue: string,
   processor: Processor,
   fn: (w: Worker) => Promise<T>,
-  opts?: { concurrency?: number; tenant?: string },
+  opts?: { concurrency?: number; namespace?: string },
 ): Promise<T> {
   const w = new Worker(queue, processor, {
     adapter,
-    tenant: opts?.tenant ?? "t",
+    namespace: opts?.namespace ?? "t",
     concurrency: opts?.concurrency ?? 1,
     pollInterval: 10,
     stallInterval: 200,
@@ -59,7 +59,7 @@ export async function runSelfTest(adapter?: Adapter): Promise<TestResult[]> {
     ["retries with backoff", testRetry],
     ["unrecoverable errors skip retry", testUnrecoverable],
     ["worker concurrency", testConcurrency],
-    ["tenant isolation", testTenants],
+    ["namespace isolation", testNamespaces],
     ["idempotency keys", testIdempotency],
     ["pause and resume", testPause],
     ["group concurrency", testGroup],
@@ -102,7 +102,7 @@ export async function runSelfTest(adapter?: Adapter): Promise<TestResult[]> {
 }
 
 async function testFifo(a: Adapter) {
-  const q = new Queue<number>("q", { adapter: a, tenant: "t" });
+  const q = new Queue<number>("q", { adapter: a, namespace: "t" });
   const seen: number[] = [];
   await q.add("n", 1);
   await q.add("n", 2);
@@ -116,7 +116,7 @@ async function testFifo(a: Adapter) {
 }
 
 async function testPriority(a: Adapter) {
-  const q = new Queue<string>("q", { adapter: a, tenant: "t" });
+  const q = new Queue<string>("q", { adapter: a, namespace: "t" });
   await q.add("n", "low", { priority: 1 });
   await q.add("n", "high", { priority: 10 });
   await q.add("n", "mid", { priority: 5 });
@@ -130,7 +130,7 @@ async function testPriority(a: Adapter) {
 }
 
 async function testDelayed(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   const t0 = clock.now();
   await q.add("n", {}, { delay: 80 });
   let done = 0;
@@ -143,7 +143,7 @@ async function testDelayed(a: Adapter) {
 }
 
 async function testRetry(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   let n = 0;
   await q.add("n", {}, { attempts: 3, backoff: { type: "fixed", delay: 20 } });
   await withWorker(a, "q", async () => {
@@ -158,7 +158,7 @@ async function testRetry(a: Adapter) {
 }
 
 async function testUnrecoverable(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   let n = 0;
   await q.add("n", {}, { attempts: 5 });
   await withWorker(a, "q", async () => {
@@ -171,7 +171,7 @@ async function testUnrecoverable(a: Adapter) {
 }
 
 async function testConcurrency(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   let max = 0;
   let current = 0;
   for (let i = 0; i < 8; i++) await q.add("n", i);
@@ -192,9 +192,9 @@ async function testConcurrency(a: Adapter) {
   if (max < 3) throw new Error(`max concurrency ${max}`);
 }
 
-async function testTenants(a: Adapter) {
-  const acme = new Queue("mail", { adapter: a, tenant: "acme" });
-  const solo = new Queue("mail", { adapter: a, tenant: "solo" });
+async function testNamespaces(a: Adapter) {
+  const acme = new Queue("mail", { adapter: a, namespace: "acme" });
+  const solo = new Queue("mail", { adapter: a, namespace: "solo" });
   await acme.add("a", { t: "acme" });
   await solo.add("a", { t: "solo" });
   const seen: string[] = [];
@@ -207,7 +207,7 @@ async function testTenants(a: Adapter) {
     async () => {
       await waitFor(() => seen.length === 1);
     },
-    { tenant: "acme" },
+    { namespace: "acme" },
   );
   if (seen.join() !== "acme") throw new Error(`leaked ${seen.join()}`);
   const soloCounts = await solo.getJobCounts();
@@ -215,7 +215,7 @@ async function testTenants(a: Adapter) {
 }
 
 async function testIdempotency(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   const a1 = await q.add("n", { n: 1 }, { idempotencyKey: "k1" });
   const a2 = await q.add("n", { n: 2 }, { idempotencyKey: "k1" });
   if (a1.id !== a2.id) throw new Error("expected same job");
@@ -224,7 +224,7 @@ async function testIdempotency(a: Adapter) {
 }
 
 async function testPause(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   await q.add("n", 1);
   await q.pause();
   let n = 0;
@@ -239,7 +239,7 @@ async function testPause(a: Adapter) {
 }
 
 async function testGroup(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   for (let i = 0; i < 4; i++) {
     await q.add("n", i, { group: { id: "user-1", max: 1 } });
   }
@@ -263,7 +263,7 @@ async function testGroup(a: Adapter) {
 }
 
 async function testFlow(a: Adapter) {
-  const flow = new FlowProducer({ adapter: a, tenant: "t" });
+  const flow = new FlowProducer({ adapter: a, namespace: "t" });
   const { job } = await flow.add({
     name: "parent",
     queueName: "q",
@@ -286,7 +286,7 @@ async function testFlow(a: Adapter) {
 }
 
 async function testWorkflow(a: Adapter) {
-  const orch = new Orchestrator({ adapter: a, tenant: "t", concurrency: 4 });
+  const orch = new Orchestrator({ adapter: a, namespace: "t", concurrency: 4 });
   const def = defineWorkflow<{ n: number }>("sum", {
     a: { run: async ({ input }) => input.n + 1 },
     b: { run: async ({ input }) => input.n + 2 },
@@ -307,7 +307,7 @@ async function testWorkflow(a: Adapter) {
 }
 
 async function testProgress(a: Adapter) {
-  const q = new Queue("q", { adapter: a, tenant: "t" });
+  const q = new Queue("q", { adapter: a, namespace: "t" });
   const job = await q.add("n", {});
   await withWorker(a, "q", async (j) => {
     await j.updateProgress(40);
@@ -330,7 +330,7 @@ async function testAzureAdapter() {
   await a.reset();
   await testDelayed(a);
   await a.reset();
-  await testTenants(a);
+  await testNamespaces(a);
   await a.reset();
   await testIdempotency(a);
   await a.reset();

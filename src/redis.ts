@@ -43,17 +43,17 @@ export class RedisAdapter extends Emitter implements Adapter {
   private jobKey(id: string) {
     return `${PREFIX}:job:${id}`;
   }
-  private setKey(tenant: string, queue: string, status: string) {
-    return `${PREFIX}:q:${tenant}:${queue}:${status}`;
+  private setKey(namespace: string, queue: string, status: string) {
+    return `${PREFIX}:q:${namespace}:${queue}:${status}`;
   }
-  private metaKey(tenant: string, queue: string) {
-    return `${PREFIX}:meta:${qk(tenant, queue)}`;
+  private metaKey(namespace: string, queue: string) {
+    return `${PREFIX}:meta:${qk(namespace, queue)}`;
   }
 
   private async saveJob(job: JobRecord) {
     await this.redis.set(this.jobKey(job.id), JSON.stringify(job));
     await this.redis.sadd(`${PREFIX}:ids`, job.id);
-    await this.redis.sadd(`${PREFIX}:queues`, qk(job.tenant, job.queue));
+    await this.redis.sadd(`${PREFIX}:queues`, qk(job.namespace, job.queue));
   }
 
   private async readJob(id: string): Promise<JobRecord | null> {
@@ -63,9 +63,9 @@ export class RedisAdapter extends Emitter implements Adapter {
 
   private async index(job: JobRecord, prev?: JobRecord | null) {
     if (prev) {
-      await this.redis.srem(this.setKey(prev.tenant, prev.queue, prev.status), job.id);
+      await this.redis.srem(this.setKey(prev.namespace, prev.queue, prev.status), job.id);
     }
-    await this.redis.sadd(this.setKey(job.tenant, job.queue, job.status), job.id);
+    await this.redis.sadd(this.setKey(job.namespace, job.queue, job.status), job.id);
   }
 
   async addJob(job: JobRecord): Promise<JobRecord> {
@@ -75,7 +75,7 @@ export class RedisAdapter extends Emitter implements Adapter {
         const existing = await this.readJob(id);
         if (
           existing &&
-          existing.tenant === job.tenant &&
+          existing.namespace === job.namespace &&
           existing.queue === job.queue &&
           existing.idempotencyKey === job.idempotencyKey &&
           ["waiting", "delayed", "active", "waiting-children"].includes(existing.status)
@@ -95,7 +95,7 @@ export class RedisAdapter extends Emitter implements Adapter {
     return out;
   }
 
-  async getJob(_tenant: string, _queue: string, id: string): Promise<JobRecord | null> {
+  async getJob(_namespace: string, _queue: string, id: string): Promise<JobRecord | null> {
     return this.readJob(id);
   }
 
@@ -105,15 +105,15 @@ export class RedisAdapter extends Emitter implements Adapter {
     await this.index(job, prev);
   }
 
-  async removeJob(_tenant: string, _queue: string, id: string): Promise<void> {
+  async removeJob(_namespace: string, _queue: string, id: string): Promise<void> {
     const prev = await this.readJob(id);
-    if (prev) await this.redis.srem(this.setKey(prev.tenant, prev.queue, prev.status), id);
+    if (prev) await this.redis.srem(this.setKey(prev.namespace, prev.queue, prev.status), id);
     await this.redis.del(this.jobKey(id));
     await this.redis.srem(`${PREFIX}:ids`, id);
   }
 
   async claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
@@ -124,9 +124,9 @@ export class RedisAdapter extends Emitter implements Adapter {
     for (const id of ids) {
       const job = await this.readJob(id);
       if (!job) continue;
-      if (tenant !== "*" && job.tenant !== tenant) continue;
+      if (namespace !== "*" && job.namespace !== namespace) continue;
       if (queue !== "*" && job.queue !== queue) continue;
-      const meta = await this.getQueueMeta(job.tenant, job.queue);
+      const meta = await this.getQueueMeta(job.namespace, job.queue);
       if (meta.paused) continue;
       if (job.status === "delayed" && job.processAt <= now) {
         job.status = "waiting";
@@ -140,7 +140,7 @@ export class RedisAdapter extends Emitter implements Adapter {
     for (const id of ids) {
       const j = await this.readJob(id);
       if (j?.status === "active") {
-        const k = qk(j.tenant, j.queue);
+        const k = qk(j.namespace, j.queue);
         activeCounts.set(k, (activeCounts.get(k) ?? 0) + 1);
         if (j.groupId) {
           const g = `${k}::${j.groupId}`;
@@ -149,12 +149,12 @@ export class RedisAdapter extends Emitter implements Adapter {
       }
     }
     for (const job of jobs) {
-      const meta = await this.getQueueMeta(job.tenant, job.queue);
-      if (meta.concurrency != null && (activeCounts.get(qk(job.tenant, job.queue)) ?? 0) >= meta.concurrency) {
+      const meta = await this.getQueueMeta(job.namespace, job.queue);
+      if (meta.concurrency != null && (activeCounts.get(qk(job.namespace, job.queue)) ?? 0) >= meta.concurrency) {
         continue;
       }
       if (job.groupId) {
-        const g = `${qk(job.tenant, job.queue)}::${job.groupId}`;
+        const g = `${qk(job.namespace, job.queue)}::${job.groupId}`;
         if ((groupCounts.get(g) ?? 0) >= job.groupMax) continue;
       }
       job.status = "active";
@@ -169,7 +169,7 @@ export class RedisAdapter extends Emitter implements Adapter {
   }
 
   async renewLock(
-    _tenant: string,
+    _namespace: string,
     _queue: string,
     id: string,
     token: string,
@@ -189,7 +189,7 @@ export class RedisAdapter extends Emitter implements Adapter {
     for (const id of ids) {
       const job = await this.readJob(id);
       if (!job) continue;
-      if (filter.tenant && job.tenant !== filter.tenant) continue;
+      if (filter.namespace && job.namespace !== filter.namespace) continue;
       if (filter.queue && job.queue !== filter.queue) continue;
       if (statuses && !statuses.includes(job.status)) continue;
       if (filter.ids && !filter.ids.includes(job.id)) continue;
@@ -205,29 +205,29 @@ export class RedisAdapter extends Emitter implements Adapter {
 
   async countJobs(filter: CountFilter): Promise<Record<JobStatus, number>> {
     const counts = emptyCounts();
-    const jobs = await this.listJobs({ tenant: filter.tenant, queue: filter.queue, limit: 100_000 });
+    const jobs = await this.listJobs({ namespace: filter.namespace, queue: filter.queue, limit: 100_000 });
     for (const j of jobs) counts[j.status] += 1;
     return counts;
   }
 
-  async getQueueMeta(tenant: string, queue: string): Promise<QueueMeta> {
-    const raw = await this.redis.get(this.metaKey(tenant, queue));
-    if (!raw) return { tenant, name: queue, paused: false, concurrency: null };
+  async getQueueMeta(namespace: string, queue: string): Promise<QueueMeta> {
+    const raw = await this.redis.get(this.metaKey(namespace, queue));
+    if (!raw) return { namespace, name: queue, paused: false, concurrency: null };
     return JSON.parse(raw) as QueueMeta;
   }
 
   async setQueueMeta(meta: QueueMeta): Promise<void> {
-    await this.redis.set(this.metaKey(meta.tenant, meta.name), JSON.stringify(meta));
-    await this.redis.sadd(`${PREFIX}:queues`, qk(meta.tenant, meta.name));
+    await this.redis.set(this.metaKey(meta.namespace, meta.name), JSON.stringify(meta));
+    await this.redis.sadd(`${PREFIX}:queues`, qk(meta.namespace, meta.name));
   }
 
-  async listQueues(tenant?: string): Promise<QueueMeta[]> {
+  async listQueues(namespace?: string): Promise<QueueMeta[]> {
     const keys = await this.redis.smembers(`${PREFIX}:queues`);
     const out: QueueMeta[] = [];
     for (const k of keys) {
       const [t, name] = k.split("::");
       if (!t || !name) continue;
-      if (tenant && t !== tenant) continue;
+      if (namespace && t !== namespace) continue;
       out.push(await this.getQueueMeta(t, name));
     }
     return out;
@@ -238,14 +238,14 @@ export class RedisAdapter extends Emitter implements Adapter {
     await this.redis.sadd(`${PREFIX}:reps`, job.id);
   }
 
-  async listRepeatable(tenant: string, queue?: string): Promise<RepeatableRecord[]> {
+  async listRepeatable(namespace: string, queue?: string): Promise<RepeatableRecord[]> {
     const ids = await this.redis.smembers(`${PREFIX}:reps`);
     const out: RepeatableRecord[] = [];
     for (const id of ids) {
       const raw = await this.redis.get(`${PREFIX}:rep:${id}`);
       if (!raw) continue;
       const r = JSON.parse(raw) as RepeatableRecord;
-      if (r.tenant !== tenant) continue;
+      if (r.namespace !== namespace) continue;
       if (queue && r.queue !== queue) continue;
       out.push(r);
     }
@@ -286,7 +286,7 @@ export class RedisAdapter extends Emitter implements Adapter {
       const raw = await this.redis.get(`${PREFIX}:evt:${id}`);
       if (!raw) continue;
       const e = JSON.parse(raw) as QueueEvent;
-      if (filter.tenant && e.tenant !== filter.tenant) continue;
+      if (filter.namespace && e.namespace !== filter.namespace) continue;
       if (filter.queue && e.queue !== filter.queue) continue;
       if (types && !types.includes(e.type)) continue;
       if (filter.jobId && e.jobId !== filter.jobId) continue;
@@ -316,17 +316,17 @@ export class RedisAdapter extends Emitter implements Adapter {
   }
 
   async clean(
-    tenant: string,
+    namespace: string,
     queue: string,
     status: JobStatus,
     olderThan: number,
     limit: number,
   ): Promise<number> {
-    const jobs = await this.listJobs({ tenant, queue, status, limit: 10_000 });
+    const jobs = await this.listJobs({ namespace, queue, status, limit: 10_000 });
     let n = 0;
     for (const job of jobs) {
       if ((job.finishedOn ?? job.timestamp) > olderThan) continue;
-      await this.removeJob(tenant, queue, job.id);
+      await this.removeJob(namespace, queue, job.id);
       n += 1;
       if (n >= limit) break;
     }
@@ -343,12 +343,12 @@ export class RedisAdapter extends Emitter implements Adapter {
     return raw ? (JSON.parse(raw) as WorkflowRecord) : null;
   }
 
-  async listWorkflows(tenant: string, limit = 50): Promise<WorkflowRecord[]> {
+  async listWorkflows(namespace: string, limit = 50): Promise<WorkflowRecord[]> {
     const ids = await this.redis.smembers(`${PREFIX}:wfs`);
     const out: WorkflowRecord[] = [];
     for (const id of ids) {
       const wf = await this.getWorkflow(id);
-      if (wf && wf.tenant === tenant) out.push(wf);
+      if (wf && wf.namespace === namespace) out.push(wf);
     }
     out.sort((a, b) => b.createdAt - a.createdAt);
     return out.slice(0, limit);

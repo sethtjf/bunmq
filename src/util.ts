@@ -16,8 +16,8 @@ export function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-export function qk(tenant: string, queue: string): string {
-  return `${tenant}::${queue}`;
+export function qk(namespace: string, queue: string): string {
+  return `${namespace}::${queue}`;
 }
 
 export function backoffDelay(backoff: Backoff | undefined, attemptsMade: number): number {

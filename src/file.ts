@@ -77,17 +77,17 @@ export class FileAdapter extends MemoryAdapter {
   override updateJob(job: JobRecord) {
     return this.persist(() => super.updateJob(job));
   }
-  override removeJob(tenant: string, queue: string, id: string) {
-    return this.persist(() => super.removeJob(tenant, queue, id));
+  override removeJob(namespace: string, queue: string, id: string) {
+    return this.persist(() => super.removeJob(namespace, queue, id));
   }
   override claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
     lockUntil: number,
   ) {
-    return this.persist(() => super.claimNext(tenant, queue, workerId, now, lockUntil));
+    return this.persist(() => super.claimNext(namespace, queue, workerId, now, lockUntil));
   }
   override setQueueMeta(meta: QueueMeta) {
     return this.persist(() => super.setQueueMeta(meta));
@@ -107,14 +107,14 @@ export class FileAdapter extends MemoryAdapter {
   override releaseStalled(now: number) {
     return this.persist(() => super.releaseStalled(now));
   }
-  override clean(tenant: string, queue: string, status: Parameters<MemoryAdapter["clean"]>[2], olderThan: number, limit: number) {
-    return this.persist(() => super.clean(tenant, queue, status, olderThan, limit));
+  override clean(namespace: string, queue: string, status: Parameters<MemoryAdapter["clean"]>[2], olderThan: number, limit: number) {
+    return this.persist(() => super.clean(namespace, queue, status, olderThan, limit));
   }
   override reset() {
     return this.persist(() => super.reset?.() ?? Promise.resolve());
   }
-  override getJob(tenant: string, queue: string, id: string) {
-    return this.after(() => super.getJob(tenant, queue, id));
+  override getJob(namespace: string, queue: string, id: string) {
+    return this.after(() => super.getJob(namespace, queue, id));
   }
   override listJobs(filter: Parameters<MemoryAdapter["listJobs"]>[0]) {
     return this.after(() => super.listJobs(filter));

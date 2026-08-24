@@ -16,16 +16,16 @@ export interface Adapter extends Emitter {
 
   addJob(job: JobRecord): Promise<JobRecord>;
   addJobs(jobs: JobRecord[]): Promise<JobRecord[]>;
-  getJob(tenant: string, queue: string, id: string): Promise<JobRecord | null>;
+  getJob(namespace: string, queue: string, id: string): Promise<JobRecord | null>;
   updateJob(job: JobRecord): Promise<void>;
-  removeJob(tenant: string, queue: string, id: string): Promise<void>;
+  removeJob(namespace: string, queue: string, id: string): Promise<void>;
 
   /**
    * Atomically claim the next runnable job. Must be safe under concurrent
    * workers. Returns null if nothing is ready.
    */
   claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
@@ -33,7 +33,7 @@ export interface Adapter extends Emitter {
   ): Promise<JobRecord | null>;
 
   renewLock(
-    tenant: string,
+    namespace: string,
     queue: string,
     id: string,
     token: string,
@@ -43,12 +43,12 @@ export interface Adapter extends Emitter {
   listJobs(filter: JobFilter): Promise<JobRecord[]>;
   countJobs(filter: CountFilter): Promise<Record<JobStatus, number>>;
 
-  getQueueMeta(tenant: string, queue: string): Promise<QueueMeta>;
+  getQueueMeta(namespace: string, queue: string): Promise<QueueMeta>;
   setQueueMeta(meta: QueueMeta): Promise<void>;
-  listQueues(tenant?: string): Promise<QueueMeta[]>;
+  listQueues(namespace?: string): Promise<QueueMeta[]>;
 
   upsertRepeatable(job: RepeatableRecord): Promise<void>;
-  listRepeatable(tenant: string, queue?: string): Promise<RepeatableRecord[]>;
+  listRepeatable(namespace: string, queue?: string): Promise<RepeatableRecord[]>;
   removeRepeatable(id: string): Promise<void>;
   dueRepeatable(now: number): Promise<RepeatableRecord[]>;
 
@@ -57,7 +57,7 @@ export interface Adapter extends Emitter {
 
   releaseStalled(now: number): Promise<JobRecord[]>;
   clean(
-    tenant: string,
+    namespace: string,
     queue: string,
     status: JobStatus,
     olderThan: number,
@@ -66,7 +66,7 @@ export interface Adapter extends Emitter {
 
   saveWorkflow(wf: WorkflowRecord): Promise<void>;
   getWorkflow(id: string): Promise<WorkflowRecord | null>;
-  listWorkflows(tenant: string, limit?: number): Promise<WorkflowRecord[]>;
+  listWorkflows(namespace: string, limit?: number): Promise<WorkflowRecord[]>;
 
   takeRateLimit(key: string, max: number, duration: number, now: number): Promise<number>;
 

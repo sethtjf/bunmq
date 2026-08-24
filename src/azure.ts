@@ -29,7 +29,7 @@ export type AzureTableEntity = {
 
 export type AzureBusMessage = {
   id: string;
-  tenant: string;
+  namespace: string;
   queue: string;
   lockToken: string;
 };
@@ -41,9 +41,9 @@ export type AzureStorageBusClient = {
   listEntities(partition: string): Promise<AzureTableEntity[]>;
   /** Conditional replace. `false` means another writer won. */
   replaceEntity(entity: AzureTableEntity, etag: string): Promise<boolean>;
-  send(message: { id: string; tenant: string; queue: string; scheduledAt?: number }): Promise<void>;
+  send(message: { id: string; namespace: string; queue: string; scheduledAt?: number }): Promise<void>;
   receive(opts: {
-    tenant?: string;
+    namespace?: string;
     queue?: string;
     maxWaitMs?: number;
   }): Promise<AzureBusMessage | null>;
@@ -55,8 +55,8 @@ export type AzureStorageBusClient = {
 
 const LIVE: JobStatus[] = ["waiting", "delayed", "active", "waiting-children"];
 
-function jobPart(tenant: string, queue: string) {
-  return `j:${tenant}:${queue}`;
+function jobPart(namespace: string, queue: string) {
+  return `j:${namespace}:${queue}`;
 }
 
 export class AzureStorageBusAdapter extends Emitter implements Adapter {
@@ -82,23 +82,23 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     return { value: JSON.parse(hit.value) as T, etag: hit.etag ?? "" };
   }
 
-  private async readJob(tenant: string, queue: string, id: string): Promise<JobRecord | null> {
-    const hit = await this.read<JobRecord>(jobPart(tenant, queue), id);
+  private async readJob(namespace: string, queue: string, id: string): Promise<JobRecord | null> {
+    const hit = await this.read<JobRecord>(jobPart(namespace, queue), id);
     return hit?.value ?? null;
   }
 
   private async readJobById(id: string): Promise<JobRecord | null> {
-    const ptr = await this.read<{ tenant: string; queue: string }>("ptr", id);
+    const ptr = await this.read<{ namespace: string; queue: string }>("ptr", id);
     if (!ptr) return null;
-    return this.readJob(ptr.value.tenant, ptr.value.queue, id);
+    return this.readJob(ptr.value.namespace, ptr.value.queue, id);
   }
 
   private async persistJob(job: JobRecord): Promise<void> {
-    await this.put(jobPart(job.tenant, job.queue), job.id, job);
-    await this.put("ptr", job.id, { tenant: job.tenant, queue: job.queue });
-    await this.put("ids", job.id, qk(job.tenant, job.queue));
-    await this.put("qs", qk(job.tenant, job.queue), {
-      tenant: job.tenant,
+    await this.put(jobPart(job.namespace, job.queue), job.id, job);
+    await this.put("ptr", job.id, { namespace: job.namespace, queue: job.queue });
+    await this.put("ids", job.id, qk(job.namespace, job.queue));
+    await this.put("qs", qk(job.namespace, job.queue), {
+      namespace: job.namespace,
       name: job.queue,
     });
   }
@@ -107,7 +107,7 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     if (job.status !== "waiting" && job.status !== "delayed") return;
     await this.client.send({
       id: job.id,
-      tenant: job.tenant,
+      namespace: job.namespace,
       queue: job.queue,
       scheduledAt: job.processAt,
     });
@@ -115,15 +115,15 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
 
   async addJob(job: JobRecord): Promise<JobRecord> {
     if (job.idempotencyKey) {
-      const hit = await this.read<string>("idem", `${job.tenant}:${job.queue}:${job.idempotencyKey}`);
+      const hit = await this.read<string>("idem", `${job.namespace}:${job.queue}:${job.idempotencyKey}`);
       if (hit) {
-        const existing = await this.readJob(job.tenant, job.queue, hit.value);
+        const existing = await this.readJob(job.namespace, job.queue, hit.value);
         if (existing && LIVE.includes(existing.status)) return existing;
       }
     }
     await this.persistJob(job);
     if (job.idempotencyKey) {
-      await this.put("idem", `${job.tenant}:${job.queue}:${job.idempotencyKey}`, job.id);
+      await this.put("idem", `${job.namespace}:${job.queue}:${job.idempotencyKey}`, job.id);
     }
     await this.dispatch(job);
     return job;
@@ -135,8 +135,8 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     return out;
   }
 
-  async getJob(tenant: string, queue: string, id: string): Promise<JobRecord | null> {
-    return this.readJob(tenant, queue, id);
+  async getJob(namespace: string, queue: string, id: string): Promise<JobRecord | null> {
+    return this.readJob(namespace, queue, id);
   }
 
   async updateJob(job: JobRecord): Promise<void> {
@@ -144,33 +144,33 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     if (job.status === "waiting" || job.status === "delayed") await this.dispatch(job);
   }
 
-  async removeJob(tenant: string, queue: string, id: string): Promise<void> {
-    const job = await this.readJob(tenant, queue, id);
-    await this.client.deleteEntity(jobPart(tenant, queue), id);
+  async removeJob(namespace: string, queue: string, id: string): Promise<void> {
+    const job = await this.readJob(namespace, queue, id);
+    await this.client.deleteEntity(jobPart(namespace, queue), id);
     await this.client.deleteEntity("ptr", id);
     await this.client.deleteEntity("ids", id);
     if (job?.idempotencyKey) {
-      await this.client.deleteEntity("idem", `${tenant}:${queue}:${job.idempotencyKey}`);
+      await this.client.deleteEntity("idem", `${namespace}:${queue}:${job.idempotencyKey}`);
     }
   }
 
   async claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
     lockUntil: number,
   ): Promise<JobRecord | null> {
     return this.mutex.run(async () => {
-      await this.drainHints(tenant, queue, now);
-      const jobs = await this.collectRunnable(tenant, queue, now);
+      await this.drainHints(namespace, queue, now);
+      const jobs = await this.collectRunnable(namespace, queue, now);
       jobs.sort((a, b) => b.priority - a.priority || a.timestamp - b.timestamp);
 
       const activeCounts = new Map<string, number>();
       const groupCounts = new Map<string, number>();
       for (const j of await this.allJobs()) {
         if (j.status !== "active") continue;
-        const k = qk(j.tenant, j.queue);
+        const k = qk(j.namespace, j.queue);
         activeCounts.set(k, (activeCounts.get(k) ?? 0) + 1);
         if (j.groupId) {
           const g = `${k}::${j.groupId}`;
@@ -179,13 +179,13 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
       }
 
       for (const job of jobs) {
-        const meta = await this.getQueueMeta(job.tenant, job.queue);
+        const meta = await this.getQueueMeta(job.namespace, job.queue);
         if (meta.paused) continue;
-        if (meta.concurrency != null && (activeCounts.get(qk(job.tenant, job.queue)) ?? 0) >= meta.concurrency) {
+        if (meta.concurrency != null && (activeCounts.get(qk(job.namespace, job.queue)) ?? 0) >= meta.concurrency) {
           continue;
         }
         if (job.groupId) {
-          const g = `${qk(job.tenant, job.queue)}::${job.groupId}`;
+          const g = `${qk(job.namespace, job.queue)}::${job.groupId}`;
           if ((groupCounts.get(g) ?? 0) >= job.groupMax) continue;
         }
         const claimed: JobRecord = {
@@ -196,29 +196,29 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
           lockUntil,
           lockToken: workerId,
         };
-        const row = await this.client.getEntity(jobPart(job.tenant, job.queue), job.id);
+        const row = await this.client.getEntity(jobPart(job.namespace, job.queue), job.id);
         if (!row?.etag) continue;
         const ok = await this.client.replaceEntity(
-          { partition: jobPart(job.tenant, job.queue), row: job.id, value: JSON.stringify(claimed) },
+          { partition: jobPart(job.namespace, job.queue), row: job.id, value: JSON.stringify(claimed) },
           row.etag,
         );
         if (!ok) continue;
-        await this.put("ptr", claimed.id, { tenant: claimed.tenant, queue: claimed.queue });
+        await this.put("ptr", claimed.id, { namespace: claimed.namespace, queue: claimed.queue });
         return claimed;
       }
       return null;
     });
   }
 
-  private async drainHints(tenant: string | "*", queue: string, now: number): Promise<void> {
+  private async drainHints(namespace: string | "*", queue: string, now: number): Promise<void> {
     for (let i = 0; i < 32; i++) {
       const msg = await this.client.receive({
-        tenant: tenant === "*" ? undefined : tenant,
+        namespace: namespace === "*" ? undefined : namespace,
         queue: queue === "*" ? undefined : queue,
         maxWaitMs: 0,
       });
       if (!msg) break;
-      const job = await this.readJob(msg.tenant, msg.queue, msg.id);
+      const job = await this.readJob(msg.namespace, msg.queue, msg.id);
       if (!job) {
         await this.client.complete(msg.lockToken);
         continue;
@@ -232,14 +232,14 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
   }
 
   private async collectRunnable(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     now: number,
   ): Promise<JobRecord[]> {
-    const jobs = await this.scopedJobs(tenant, queue);
+    const jobs = await this.scopedJobs(namespace, queue);
     const out: JobRecord[] = [];
     for (const job of jobs) {
-      const meta = await this.getQueueMeta(job.tenant, job.queue);
+      const meta = await this.getQueueMeta(job.namespace, job.queue);
       if (meta.paused) continue;
       if (job.status === "delayed" && job.processAt <= now) {
         job.status = "waiting";
@@ -250,14 +250,14 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     return out;
   }
 
-  private async scopedJobs(tenant: string | "*", queue: string): Promise<JobRecord[]> {
-    if (tenant !== "*" && queue !== "*") {
-      const rows = await this.client.listEntities(jobPart(tenant, queue));
+  private async scopedJobs(namespace: string | "*", queue: string): Promise<JobRecord[]> {
+    if (namespace !== "*" && queue !== "*") {
+      const rows = await this.client.listEntities(jobPart(namespace, queue));
       return rows.map((r) => JSON.parse(r.value) as JobRecord);
     }
     const jobs = await this.allJobs();
     return jobs.filter((j) => {
-      if (tenant !== "*" && j.tenant !== tenant) return false;
+      if (namespace !== "*" && j.namespace !== namespace) return false;
       if (queue !== "*" && j.queue !== queue) return false;
       return true;
     });
@@ -282,13 +282,13 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
   }
 
   async renewLock(
-    tenant: string,
+    namespace: string,
     queue: string,
     id: string,
     token: string,
     lockUntil: number,
   ): Promise<boolean> {
-    const job = await this.readJob(tenant, queue, id);
+    const job = await this.readJob(namespace, queue, id);
     if (!job || job.lockToken !== token || job.status !== "active") return false;
     job.lockUntil = lockUntil;
     await this.persistJob(job);
@@ -298,7 +298,7 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
   async listJobs(filter: JobFilter): Promise<JobRecord[]> {
     const statuses = asArray(filter.status);
     const rows = (await this.allJobs()).filter((job) => {
-      if (filter.tenant && job.tenant !== filter.tenant) return false;
+      if (filter.namespace && job.namespace !== filter.namespace) return false;
       if (filter.queue && job.queue !== filter.queue) return false;
       if (statuses && !statuses.includes(job.status)) return false;
       if (filter.ids && !filter.ids.includes(job.id)) return false;
@@ -314,30 +314,30 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
 
   async countJobs(filter: CountFilter): Promise<Record<JobStatus, number>> {
     const counts = emptyCounts();
-    for (const j of await this.listJobs({ tenant: filter.tenant, queue: filter.queue, limit: 100_000 })) {
+    for (const j of await this.listJobs({ namespace: filter.namespace, queue: filter.queue, limit: 100_000 })) {
       counts[j.status] += 1;
     }
     return counts;
   }
 
-  async getQueueMeta(tenant: string, queue: string): Promise<QueueMeta> {
-    const hit = await this.read<QueueMeta>("qm", qk(tenant, queue));
+  async getQueueMeta(namespace: string, queue: string): Promise<QueueMeta> {
+    const hit = await this.read<QueueMeta>("qm", qk(namespace, queue));
     if (hit) return hit.value;
-    return { tenant, name: queue, paused: false, concurrency: null };
+    return { namespace, name: queue, paused: false, concurrency: null };
   }
 
   async setQueueMeta(meta: QueueMeta): Promise<void> {
-    await this.put("qm", qk(meta.tenant, meta.name), meta);
-    await this.put("qs", qk(meta.tenant, meta.name), { tenant: meta.tenant, name: meta.name });
+    await this.put("qm", qk(meta.namespace, meta.name), meta);
+    await this.put("qs", qk(meta.namespace, meta.name), { namespace: meta.namespace, name: meta.name });
   }
 
-  async listQueues(tenant?: string): Promise<QueueMeta[]> {
+  async listQueues(namespace?: string): Promise<QueueMeta[]> {
     const rows = await this.client.listEntities("qs");
     const out: QueueMeta[] = [];
     for (const r of rows) {
       const [t, name] = r.row.split("::");
       if (!t || !name) continue;
-      if (tenant && t !== tenant) continue;
+      if (namespace && t !== namespace) continue;
       out.push(await this.getQueueMeta(t, name));
     }
     return out;
@@ -348,13 +348,13 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     await this.put("reps", job.id, "1");
   }
 
-  async listRepeatable(tenant: string, queue?: string): Promise<RepeatableRecord[]> {
+  async listRepeatable(namespace: string, queue?: string): Promise<RepeatableRecord[]> {
     const ids = await this.client.listEntities("reps");
     const out: RepeatableRecord[] = [];
     for (const row of ids) {
       const hit = await this.read<RepeatableRecord>("r", row.row);
       if (!hit) continue;
-      if (hit.value.tenant !== tenant) continue;
+      if (hit.value.namespace !== namespace) continue;
       if (queue && hit.value.queue !== queue) continue;
       out.push(hit.value);
     }
@@ -391,7 +391,7 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
       const hit = await this.read<QueueEvent>("e", row.row);
       if (!hit) continue;
       const e = hit.value;
-      if (filter.tenant && e.tenant !== filter.tenant) continue;
+      if (filter.namespace && e.namespace !== filter.namespace) continue;
       if (filter.queue && e.queue !== filter.queue) continue;
       if (types && !types.includes(e.type)) continue;
       if (filter.jobId && e.jobId !== filter.jobId) continue;
@@ -419,17 +419,17 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
   }
 
   async clean(
-    tenant: string,
+    namespace: string,
     queue: string,
     status: JobStatus,
     olderThan: number,
     limit: number,
   ): Promise<number> {
-    const jobs = await this.listJobs({ tenant, queue, status, limit: 10_000 });
+    const jobs = await this.listJobs({ namespace, queue, status, limit: 10_000 });
     let n = 0;
     for (const job of jobs) {
       if ((job.finishedOn ?? job.timestamp) > olderThan) continue;
-      await this.removeJob(tenant, queue, job.id);
+      await this.removeJob(namespace, queue, job.id);
       n += 1;
       if (n >= limit) break;
     }
@@ -438,7 +438,7 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
 
   async saveWorkflow(wf: WorkflowRecord): Promise<void> {
     await this.put("w", wf.id, wf);
-    await this.put("wfs", wf.id, wf.tenant);
+    await this.put("wfs", wf.id, wf.namespace);
   }
 
   async getWorkflow(id: string): Promise<WorkflowRecord | null> {
@@ -446,12 +446,12 @@ export class AzureStorageBusAdapter extends Emitter implements Adapter {
     return hit?.value ?? null;
   }
 
-  async listWorkflows(tenant: string, limit = 50): Promise<WorkflowRecord[]> {
+  async listWorkflows(namespace: string, limit = 50): Promise<WorkflowRecord[]> {
     const ids = await this.client.listEntities("wfs");
     const out: WorkflowRecord[] = [];
     for (const row of ids) {
       const wf = await this.getWorkflow(row.row);
-      if (wf && wf.tenant === tenant) out.push(wf);
+      if (wf && wf.namespace === namespace) out.push(wf);
     }
     out.sort((a, b) => b.createdAt - a.createdAt);
     return out.slice(0, limit);
@@ -504,7 +504,7 @@ export function createMemoryAzureBus(): AzureStorageBusClient {
   let n = 1;
   type Msg = {
     id: string;
-    tenant: string;
+    namespace: string;
     queue: string;
     scheduledAt: number;
     lockToken: string | null;
@@ -549,7 +549,7 @@ export function createMemoryAzureBus(): AzureStorageBusClient {
     async send(message) {
       bus.push({
         id: message.id,
-        tenant: message.tenant,
+        namespace: message.namespace,
         queue: message.queue,
         scheduledAt: message.scheduledAt ?? 0,
         lockToken: null,
@@ -564,11 +564,11 @@ export function createMemoryAzureBus(): AzureStorageBusClient {
         if (m.lockToken && m.lockUntil > now) continue;
         if (m.scheduledAt > now) continue;
         if (opts.queue && opts.queue !== "*" && m.queue !== opts.queue) continue;
-        if (opts.tenant && opts.tenant !== "*" && m.tenant !== opts.tenant) continue;
+        if (opts.namespace && opts.namespace !== "*" && m.namespace !== opts.namespace) continue;
         m.lockToken = `lock_${n++}`;
         m.lockUntil = now + 30_000;
         locked.set(m.lockToken, m);
-        return { id: m.id, tenant: m.tenant, queue: m.queue, lockToken: m.lockToken };
+        return { id: m.id, namespace: m.namespace, queue: m.queue, lockToken: m.lockToken };
       }
       return null;
     },
@@ -701,20 +701,20 @@ export function azureFromSdk(sdk: AzureSdkHandles): AzureStorageBusClient {
     },
     async send(message) {
       await sdk.sender.sendMessages({
-        body: { id: message.id, tenant: message.tenant, queue: message.queue },
+        body: { id: message.id, namespace: message.namespace, queue: message.queue },
         messageId: message.id,
         scheduledEnqueueTimeUtc: message.scheduledAt ? new Date(message.scheduledAt) : undefined,
-        applicationProperties: { tenant: message.tenant, queue: message.queue },
+        applicationProperties: { namespace: message.namespace, queue: message.queue },
       });
     },
     async receive(opts) {
       const batch = await sdk.receiver.receiveMessages(1, { maxWaitTimeInMs: opts.maxWaitMs ?? 0 });
       const raw = batch[0];
       if (!raw) return null;
-      const body = (raw.body ?? {}) as { id?: string; tenant?: string; queue?: string };
-      const tenant = String(raw.applicationProperties?.tenant ?? body.tenant ?? "");
+      const body = (raw.body ?? {}) as { id?: string; namespace?: string; queue?: string };
+      const namespace = String(raw.applicationProperties?.namespace ?? body.namespace ?? "");
       const queue = String(raw.applicationProperties?.queue ?? body.queue ?? "");
-      if (opts.tenant && opts.tenant !== "*" && tenant !== opts.tenant) {
+      if (opts.namespace && opts.namespace !== "*" && namespace !== opts.namespace) {
         await sdk.receiver.abandonMessage(raw);
         return null;
       }
@@ -724,7 +724,7 @@ export function azureFromSdk(sdk: AzureSdkHandles): AzureStorageBusClient {
       }
       const lockToken = raw.lockToken ?? "";
       inflight.set(lockToken, raw);
-      return { id: String(body.id ?? raw.messageId ?? ""), tenant, queue, lockToken };
+      return { id: String(body.id ?? raw.messageId ?? ""), namespace, queue, lockToken };
     },
     async complete(lockToken) {
       const msg = inflight.get(lockToken);

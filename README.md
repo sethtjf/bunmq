@@ -1,6 +1,6 @@
 # BunMQ
 
-Durable queues for Bun. Small surface. Pluggable storage. Multi-tenant. Workflows.
+Durable queues for Bun. Small surface. Pluggable storage. Namespaces. Workflows.
 
 Inspired by BullMQ. Built only for Bun — Node is not a goal.
 
@@ -10,7 +10,7 @@ import { createBunMQ, SqliteAdapter } from "bunmq"
 
 const bunmq = createBunMQ({
   adapter: new SqliteAdapter(new Database("bunmq.db")),
-  tenant: "acme",
+  namespace: "acme",
 })
 
 await bunmq.queue("mail").add("welcome", { to: "ada@bunmq.dev" }, {
@@ -60,7 +60,7 @@ const bunmq = createBunMQ({
     sender: bus.createSender("bunmq"),
     receiver: bus.createReceiver("bunmq"),
   })),
-  tenant: "acme",
+  namespace: "acme",
 })
 ```
 
@@ -68,7 +68,7 @@ Write your own by implementing `Adapter`.
 
 ## Workers
 
-Workers claim with a lock, heartbeat while running, and respect pause, tenant scope, and group caps.
+Workers claim with a lock, heartbeat while running, and respect pause, namespace scope, and group caps.
 
 ```ts
 const w = bunmq.worker("mail", async (job, { signal }) => {
@@ -86,9 +86,11 @@ w.use(async (job, next) => {
 
 Jobs support delay, priority, retries with backoff, idempotency keys, repeat (`cron` / `every`), and per-group concurrency.
 
-## Tenancy
+## Namespaces
 
-Every record carries a tenant. Workers bind to one tenant or `*` to drain them all. Pause, counts, and workflows stay isolated.
+Every record carries a namespace — an org, an env, a team, whatever you want. Not a SaaS tenant. Workers bind to one namespace or `*` to drain them all. Pause, counts, and workflows stay isolated.
+
+`group` is separate: it caps concurrency for a key inside a queue (`group: { id: userId, max: 1 }`).
 
 ## Workflows
 
@@ -113,7 +115,7 @@ await orch.run("onboard", { email: "ada@bunmq.dev" })
 bun src/run-selftest.ts
 ```
 
-Covers FIFO, priority, delays, retries, concurrency, tenants, idempotency, pause, groups, parent/child flows, workflow DAGs, and the Azure Storage Bus adapter.
+Covers FIFO, priority, delays, retries, concurrency, namespaces, idempotency, pause, groups, parent/child flows, workflow DAGs, and the Azure Storage Bus adapter.
 
 ## License
 

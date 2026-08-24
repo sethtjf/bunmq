@@ -58,7 +58,7 @@ export type {
   GroupOptions,
   WorkflowRecord,
   WorkflowStatus,
-  TenantScope,
+  NamespaceScope,
   CountFilter,
   EventFilter,
 } from "./types";
@@ -74,24 +74,24 @@ import type { JobOptions } from "./types";
 
 export type BunMQOptions = {
   adapter: Adapter;
-  tenant?: string;
+  namespace?: string;
   defaultJobOptions?: JobOptions;
 };
 
-/** One handle: queues, workers, flows, orchestrator — same adapter, same tenant. */
+/** One handle: queues, workers, flows, orchestrator — same adapter, same namespace. */
 export function createBunMQ(opts: BunMQOptions) {
-  const tenant = opts.tenant ?? "default";
+  const namespace = opts.namespace ?? "default";
   const { adapter } = opts;
   return {
     adapter,
-    tenant,
+    namespace,
     queue: <T = unknown>(
       name: string,
       extra?: { concurrency?: number | null; defaultJobOptions?: JobOptions },
     ) =>
       new Queue<T>(name, {
         adapter,
-        tenant,
+        namespace,
         defaultJobOptions: extra?.defaultJobOptions ?? opts.defaultJobOptions,
         concurrency: extra?.concurrency,
       }),
@@ -99,9 +99,9 @@ export function createBunMQ(opts: BunMQOptions) {
       name: string,
       processor: Processor<T>,
       extra?: Omit<WorkerOptions, "adapter">,
-    ) => new Worker<T>(name, processor, { adapter, tenant, ...extra }),
-    flow: () => new FlowProducer({ adapter, tenant }),
+    ) => new Worker<T>(name, processor, { adapter, namespace, ...extra }),
+    flow: () => new FlowProducer({ adapter, namespace }),
     orchestrator: (extra?: { concurrency?: number; autorun?: boolean }) =>
-      new Orchestrator({ adapter, tenant, ...extra }),
+      new Orchestrator({ adapter, namespace, ...extra }),
   };
 }

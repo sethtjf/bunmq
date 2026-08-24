@@ -34,7 +34,7 @@ function placeholders(dialect: SqlDialect, count: number, start = 1) {
 const SCHEMA_SQLITE = `
 CREATE TABLE IF NOT EXISTS bunmq_jobs (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   status TEXT NOT NULL,
   priority INTEGER NOT NULL,
@@ -46,25 +46,25 @@ CREATE TABLE IF NOT EXISTS bunmq_jobs (
   parent_id TEXT,
   body TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS bunmq_jobs_claim ON bunmq_jobs (tenant, queue, status, process_at, priority, timestamp);
+CREATE INDEX IF NOT EXISTS bunmq_jobs_claim ON bunmq_jobs (namespace, queue, status, process_at, priority, timestamp);
 CREATE INDEX IF NOT EXISTS bunmq_jobs_wf ON bunmq_jobs (workflow_id);
 CREATE TABLE IF NOT EXISTS bunmq_queues (
   k TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   name TEXT NOT NULL,
   paused INTEGER NOT NULL DEFAULT 0,
   concurrency INTEGER
 );
 CREATE TABLE IF NOT EXISTS bunmq_repeatable (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   next INTEGER NOT NULL,
   body TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS bunmq_events (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   type TEXT NOT NULL,
   job_id TEXT,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS bunmq_events (
 CREATE INDEX IF NOT EXISTS bunmq_events_ts ON bunmq_events (timestamp);
 CREATE TABLE IF NOT EXISTS bunmq_workflows (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   body TEXT NOT NULL
 );
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS bunmq_rate (
 const SCHEMA_POSTGRES = `
 CREATE TABLE IF NOT EXISTS bunmq_jobs (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   status TEXT NOT NULL,
   priority BIGINT NOT NULL,
@@ -99,25 +99,25 @@ CREATE TABLE IF NOT EXISTS bunmq_jobs (
   parent_id TEXT,
   body TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS bunmq_jobs_claim ON bunmq_jobs (tenant, queue, status, process_at, priority, timestamp);
+CREATE INDEX IF NOT EXISTS bunmq_jobs_claim ON bunmq_jobs (namespace, queue, status, process_at, priority, timestamp);
 CREATE INDEX IF NOT EXISTS bunmq_jobs_wf ON bunmq_jobs (workflow_id);
 CREATE TABLE IF NOT EXISTS bunmq_queues (
   k TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   name TEXT NOT NULL,
   paused BOOLEAN NOT NULL DEFAULT FALSE,
   concurrency INTEGER
 );
 CREATE TABLE IF NOT EXISTS bunmq_repeatable (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   next BIGINT NOT NULL,
   body TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS bunmq_events (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   queue TEXT NOT NULL,
   type TEXT NOT NULL,
   job_id TEXT,
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS bunmq_events (
 CREATE INDEX IF NOT EXISTS bunmq_events_ts ON bunmq_events (timestamp);
 CREATE TABLE IF NOT EXISTS bunmq_workflows (
   id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
+  namespace TEXT NOT NULL,
   created_at BIGINT NOT NULL,
   body TEXT NOT NULL
 );
@@ -169,7 +169,7 @@ export class SqlAdapter extends Emitter implements Adapter {
   private rowFrom(job: JobRecord) {
     return {
       id: job.id,
-      tenant: job.tenant,
+      namespace: job.namespace,
       queue: job.queue,
       status: job.status,
       priority: job.priority,
@@ -191,18 +191,18 @@ export class SqlAdapter extends Emitter implements Adapter {
     await this.ready;
     if (job.idempotencyKey) {
       const existing = await this.all<Record<string, unknown>>(
-        `SELECT body FROM bunmq_jobs WHERE tenant = ${this.p(1)} AND queue = ${this.p(2)} AND body LIKE ${this.p(3)} AND status IN ('waiting','delayed','active','waiting-children') LIMIT 1`,
-        [job.tenant, job.queue, `%"idempotencyKey":"${job.idempotencyKey}"%`],
+        `SELECT body FROM bunmq_jobs WHERE namespace = ${this.p(1)} AND queue = ${this.p(2)} AND body LIKE ${this.p(3)} AND status IN ('waiting','delayed','active','waiting-children') LIMIT 1`,
+        [job.namespace, job.queue, `%"idempotencyKey":"${job.idempotencyKey}"%`],
       );
       if (existing[0]) return this.parseJob(existing[0]);
     }
     const r = this.rowFrom(job);
     await this.run(
-      `INSERT INTO bunmq_jobs (id, tenant, queue, status, priority, process_at, timestamp, group_id, lock_until, workflow_id, parent_id, body)
+      `INSERT INTO bunmq_jobs (id, namespace, queue, status, priority, process_at, timestamp, group_id, lock_until, workflow_id, parent_id, body)
        VALUES (${placeholders(this.driver.dialect, 12)})`,
       [
         r.id,
-        r.tenant,
+        r.namespace,
         r.queue,
         r.status,
         r.priority,
@@ -224,10 +224,10 @@ export class SqlAdapter extends Emitter implements Adapter {
     return out;
   }
 
-  async getJob(tenant: string, queue: string, id: string): Promise<JobRecord | null> {
+  async getJob(namespace: string, queue: string, id: string): Promise<JobRecord | null> {
     const rows = await this.all<Record<string, unknown>>(
-      `SELECT body FROM bunmq_jobs WHERE id = ${this.p(1)} AND tenant = ${this.p(2)} AND queue = ${this.p(3)}`,
-      [id, tenant, queue],
+      `SELECT body FROM bunmq_jobs WHERE id = ${this.p(1)} AND namespace = ${this.p(2)} AND queue = ${this.p(3)}`,
+      [id, namespace, queue],
     );
     return rows[0] ? this.parseJob(rows[0]) : null;
   }
@@ -253,12 +253,12 @@ export class SqlAdapter extends Emitter implements Adapter {
     );
   }
 
-  async removeJob(_tenant: string, _queue: string, id: string): Promise<void> {
+  async removeJob(_namespace: string, _queue: string, id: string): Promise<void> {
     await this.run(`DELETE FROM bunmq_jobs WHERE id = ${this.p(1)}`, [id]);
   }
 
   async claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
@@ -270,13 +270,13 @@ export class SqlAdapter extends Emitter implements Adapter {
         [now],
       );
       const params: unknown[] = [now];
-      let sql = `SELECT j.body, j.tenant, j.queue, j.id FROM bunmq_jobs j
-        LEFT JOIN bunmq_queues q ON q.k = ${this.concatTenantQueue("j")}
+      let sql = `SELECT j.body, j.namespace, j.queue, j.id FROM bunmq_jobs j
+        LEFT JOIN bunmq_queues q ON q.k = ${this.concatNamespaceQueue("j")}
         WHERE j.status='waiting' AND j.process_at <= ${this.p(1)}`;
       let n = 2;
-      if (tenant !== "*") {
-        sql += ` AND j.tenant = ${this.p(n++)}`;
-        params.push(tenant);
+      if (namespace !== "*") {
+        sql += ` AND j.namespace = ${this.p(n++)}`;
+        params.push(namespace);
       }
       if (queue !== "*") {
         sql += ` AND j.queue = ${this.p(n++)}`;
@@ -287,19 +287,19 @@ export class SqlAdapter extends Emitter implements Adapter {
       const rows = await this.all<Record<string, unknown>>(sql, params);
       for (const row of rows) {
         const job = this.parseJob(row);
-        const meta = await this.getQueueMeta(job.tenant, job.queue);
+        const meta = await this.getQueueMeta(job.namespace, job.queue);
         if (meta.paused) continue;
         if (meta.concurrency != null) {
           const [{ c }] = await this.all<{ c: number }>(
-            `SELECT COUNT(*) as c FROM bunmq_jobs WHERE tenant=${this.p(1)} AND queue=${this.p(2)} AND status='active'`,
-            [job.tenant, job.queue],
+            `SELECT COUNT(*) as c FROM bunmq_jobs WHERE namespace=${this.p(1)} AND queue=${this.p(2)} AND status='active'`,
+            [job.namespace, job.queue],
           );
           if (Number(c) >= meta.concurrency) continue;
         }
         if (job.groupId) {
           const [{ c }] = await this.all<{ c: number }>(
-            `SELECT COUNT(*) as c FROM bunmq_jobs WHERE tenant=${this.p(1)} AND queue=${this.p(2)} AND group_id=${this.p(3)} AND status='active'`,
-            [job.tenant, job.queue, job.groupId],
+            `SELECT COUNT(*) as c FROM bunmq_jobs WHERE namespace=${this.p(1)} AND queue=${this.p(2)} AND group_id=${this.p(3)} AND status='active'`,
+            [job.namespace, job.queue, job.groupId],
           );
           if (Number(c) >= job.groupMax) continue;
         }
@@ -315,21 +315,21 @@ export class SqlAdapter extends Emitter implements Adapter {
     });
   }
 
-  private concatTenantQueue(alias: string) {
+  private concatNamespaceQueue(alias: string) {
     if (this.driver.dialect === "postgres") {
-      return `(${alias}.tenant || '::' || ${alias}.queue)`;
+      return `(${alias}.namespace || '::' || ${alias}.queue)`;
     }
-    return `(${alias}.tenant || '::' || ${alias}.queue)`;
+    return `(${alias}.namespace || '::' || ${alias}.queue)`;
   }
 
   async renewLock(
-    tenant: string,
+    namespace: string,
     queue: string,
     id: string,
     token: string,
     lockUntil: number,
   ): Promise<boolean> {
-    const job = await this.getJob(tenant, queue, id);
+    const job = await this.getJob(namespace, queue, id);
     if (!job || job.lockToken !== token || job.status !== "active") return false;
     job.lockUntil = lockUntil;
     await this.updateJob(job);
@@ -340,9 +340,9 @@ export class SqlAdapter extends Emitter implements Adapter {
     const clauses: string[] = ["1=1"];
     const params: unknown[] = [];
     let n = 1;
-    if (filter.tenant) {
-      clauses.push(`tenant = ${this.p(n++)}`);
-      params.push(filter.tenant);
+    if (filter.namespace) {
+      clauses.push(`namespace = ${this.p(n++)}`);
+      params.push(filter.namespace);
     }
     if (filter.queue) {
       clauses.push(`queue = ${this.p(n++)}`);
@@ -378,9 +378,9 @@ export class SqlAdapter extends Emitter implements Adapter {
     const clauses: string[] = [];
     const params: unknown[] = [];
     let n = 1;
-    if (filter.tenant) {
-      clauses.push(`tenant = ${this.p(n++)}`);
-      params.push(filter.tenant);
+    if (filter.namespace) {
+      clauses.push(`namespace = ${this.p(n++)}`);
+      params.push(filter.namespace);
     }
     if (filter.queue) {
       clauses.push(`queue = ${this.p(n++)}`);
@@ -395,15 +395,15 @@ export class SqlAdapter extends Emitter implements Adapter {
     return counts;
   }
 
-  async getQueueMeta(tenant: string, queue: string): Promise<QueueMeta> {
+  async getQueueMeta(namespace: string, queue: string): Promise<QueueMeta> {
     const rows = await this.all<Record<string, unknown>>(
       `SELECT * FROM bunmq_queues WHERE k = ${this.p(1)}`,
-      [qk(tenant, queue)],
+      [qk(namespace, queue)],
     );
-    if (!rows[0]) return { tenant, name: queue, paused: false, concurrency: null };
+    if (!rows[0]) return { namespace, name: queue, paused: false, concurrency: null };
     const r = rows[0];
     return {
-      tenant: String(r.tenant),
+      namespace: String(r.namespace),
       name: String(r.name),
       paused: Boolean(r.paused),
       concurrency: r.concurrency == null ? null : Number(r.concurrency),
@@ -413,20 +413,20 @@ export class SqlAdapter extends Emitter implements Adapter {
   async setQueueMeta(meta: QueueMeta): Promise<void> {
     const paused = this.driver.dialect === "postgres" ? meta.paused : meta.paused ? 1 : 0;
     await this.run(
-      `INSERT INTO bunmq_queues (k, tenant, name, paused, concurrency) VALUES (${placeholders(this.driver.dialect, 5)})
+      `INSERT INTO bunmq_queues (k, namespace, name, paused, concurrency) VALUES (${placeholders(this.driver.dialect, 5)})
        ON CONFLICT (k) DO UPDATE SET paused=${this.p(6)}, concurrency=${this.p(7)}`,
-      [qk(meta.tenant, meta.name), meta.tenant, meta.name, paused, meta.concurrency, paused, meta.concurrency],
+      [qk(meta.namespace, meta.name), meta.namespace, meta.name, paused, meta.concurrency, paused, meta.concurrency],
     );
   }
 
-  async listQueues(tenant?: string): Promise<QueueMeta[]> {
-    const rows = tenant
-      ? await this.all<Record<string, unknown>>(`SELECT * FROM bunmq_queues WHERE tenant = ${this.p(1)}`, [
-          tenant,
+  async listQueues(namespace?: string): Promise<QueueMeta[]> {
+    const rows = namespace
+      ? await this.all<Record<string, unknown>>(`SELECT * FROM bunmq_queues WHERE namespace = ${this.p(1)}`, [
+          namespace,
         ])
       : await this.all<Record<string, unknown>>(`SELECT * FROM bunmq_queues`);
     return rows.map((r) => ({
-      tenant: String(r.tenant),
+      namespace: String(r.namespace),
       name: String(r.name),
       paused: Boolean(r.paused),
       concurrency: r.concurrency == null ? null : Number(r.concurrency),
@@ -436,19 +436,19 @@ export class SqlAdapter extends Emitter implements Adapter {
   async upsertRepeatable(job: RepeatableRecord): Promise<void> {
     await this.run(`DELETE FROM bunmq_repeatable WHERE id = ${this.p(1)}`, [job.id]);
     await this.run(
-      `INSERT INTO bunmq_repeatable (id, tenant, queue, next, body) VALUES (${placeholders(this.driver.dialect, 5)})`,
-      [job.id, job.tenant, job.queue, job.next, JSON.stringify(job)],
+      `INSERT INTO bunmq_repeatable (id, namespace, queue, next, body) VALUES (${placeholders(this.driver.dialect, 5)})`,
+      [job.id, job.namespace, job.queue, job.next, JSON.stringify(job)],
     );
   }
 
-  async listRepeatable(tenant: string, queue?: string): Promise<RepeatableRecord[]> {
+  async listRepeatable(namespace: string, queue?: string): Promise<RepeatableRecord[]> {
     const rows = queue
       ? await this.all<Record<string, unknown>>(
-          `SELECT body FROM bunmq_repeatable WHERE tenant=${this.p(1)} AND queue=${this.p(2)}`,
-          [tenant, queue],
+          `SELECT body FROM bunmq_repeatable WHERE namespace=${this.p(1)} AND queue=${this.p(2)}`,
+          [namespace, queue],
         )
-      : await this.all<Record<string, unknown>>(`SELECT body FROM bunmq_repeatable WHERE tenant=${this.p(1)}`, [
-          tenant,
+      : await this.all<Record<string, unknown>>(`SELECT body FROM bunmq_repeatable WHERE namespace=${this.p(1)}`, [
+          namespace,
         ]);
     return rows.map((r) => JSON.parse(String(r.body)) as RepeatableRecord);
   }
@@ -467,8 +467,8 @@ export class SqlAdapter extends Emitter implements Adapter {
 
   async appendEvent(event: QueueEvent): Promise<void> {
     await this.run(
-      `INSERT INTO bunmq_events (id, tenant, queue, type, job_id, timestamp, body) VALUES (${placeholders(this.driver.dialect, 7)})`,
-      [event.id, event.tenant, event.queue, event.type, event.jobId, event.timestamp, JSON.stringify(event)],
+      `INSERT INTO bunmq_events (id, namespace, queue, type, job_id, timestamp, body) VALUES (${placeholders(this.driver.dialect, 7)})`,
+      [event.id, event.namespace, event.queue, event.type, event.jobId, event.timestamp, JSON.stringify(event)],
     );
     await this.run(
       `DELETE FROM bunmq_events WHERE timestamp < ${this.p(1)} AND id NOT IN (SELECT id FROM bunmq_events ORDER BY timestamp DESC LIMIT 800)`,
@@ -482,9 +482,9 @@ export class SqlAdapter extends Emitter implements Adapter {
     const clauses: string[] = ["1=1"];
     const params: unknown[] = [];
     let n = 1;
-    if (filter.tenant) {
-      clauses.push(`tenant = ${this.p(n++)}`);
-      params.push(filter.tenant);
+    if (filter.namespace) {
+      clauses.push(`namespace = ${this.p(n++)}`);
+      params.push(filter.namespace);
     }
     if (filter.queue) {
       clauses.push(`queue = ${this.p(n++)}`);
@@ -529,21 +529,21 @@ export class SqlAdapter extends Emitter implements Adapter {
   }
 
   async clean(
-    tenant: string,
+    namespace: string,
     queue: string,
     status: JobStatus,
     olderThan: number,
     limit: number,
   ): Promise<number> {
     const rows = await this.all<Record<string, unknown>>(
-      `SELECT id, body FROM bunmq_jobs WHERE tenant=${this.p(1)} AND queue=${this.p(2)} AND status=${this.p(3)} LIMIT ${this.p(4)}`,
-      [tenant, queue, status, limit],
+      `SELECT id, body FROM bunmq_jobs WHERE namespace=${this.p(1)} AND queue=${this.p(2)} AND status=${this.p(3)} LIMIT ${this.p(4)}`,
+      [namespace, queue, status, limit],
     );
     let n = 0;
     for (const row of rows) {
       const job = this.parseJob(row);
       if ((job.finishedOn ?? job.timestamp) > olderThan) continue;
-      await this.removeJob(tenant, queue, job.id);
+      await this.removeJob(namespace, queue, job.id);
       n += 1;
     }
     return n;
@@ -552,8 +552,8 @@ export class SqlAdapter extends Emitter implements Adapter {
   async saveWorkflow(wf: WorkflowRecord): Promise<void> {
     await this.run(`DELETE FROM bunmq_workflows WHERE id = ${this.p(1)}`, [wf.id]);
     await this.run(
-      `INSERT INTO bunmq_workflows (id, tenant, created_at, body) VALUES (${placeholders(this.driver.dialect, 4)})`,
-      [wf.id, wf.tenant, wf.createdAt, JSON.stringify(wf)],
+      `INSERT INTO bunmq_workflows (id, namespace, created_at, body) VALUES (${placeholders(this.driver.dialect, 4)})`,
+      [wf.id, wf.namespace, wf.createdAt, JSON.stringify(wf)],
     );
   }
 
@@ -564,10 +564,10 @@ export class SqlAdapter extends Emitter implements Adapter {
     return rows[0] ? (JSON.parse(String(rows[0].body)) as WorkflowRecord) : null;
   }
 
-  async listWorkflows(tenant: string, limit = 50): Promise<WorkflowRecord[]> {
+  async listWorkflows(namespace: string, limit = 50): Promise<WorkflowRecord[]> {
     const rows = await this.all<Record<string, unknown>>(
-      `SELECT body FROM bunmq_workflows WHERE tenant = ${this.p(1)} ORDER BY created_at DESC LIMIT ${this.p(2)}`,
-      [tenant, limit],
+      `SELECT body FROM bunmq_workflows WHERE namespace = ${this.p(1)} ORDER BY created_at DESC LIMIT ${this.p(2)}`,
+      [namespace, limit],
     );
     return rows.map((r) => JSON.parse(String(r.body)) as WorkflowRecord);
   }

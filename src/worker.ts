@@ -3,7 +3,7 @@ import { Emitter } from "./emitter";
 import { TimeoutError, UnrecoverableError } from "./errors";
 import { Job } from "./job";
 import { createRecord } from "./job";
-import type { JobRecord, TenantScope } from "./types";
+import type { JobRecord, NamespaceScope } from "./types";
 import {
   backoffDelay,
   clock,
@@ -22,7 +22,7 @@ export type Processor<T = unknown> = (
 
 export type WorkerOptions = {
   adapter: Adapter;
-  tenant?: TenantScope;
+  namespace?: NamespaceScope;
   concurrency?: number;
   limiter?: { max: number; duration: number };
   lockDuration?: number;
@@ -35,7 +35,7 @@ type Middleware<T> = (job: Job<T>, next: () => Promise<unknown>) => Promise<unkn
 
 export class Worker<T = unknown> extends Emitter {
   readonly name: string;
-  readonly tenant: TenantScope;
+  readonly namespace: NamespaceScope;
   readonly adapter: Adapter;
   concurrency: number;
   private processor: Processor<T>;
@@ -59,7 +59,7 @@ export class Worker<T = unknown> extends Emitter {
     this.name = name;
     this.processor = processor;
     this.adapter = opts.adapter;
-    this.tenant = opts.tenant ?? "default";
+    this.namespace = opts.namespace ?? "default";
     this.concurrency = opts.concurrency ?? 1;
     this.lockDuration = opts.lockDuration ?? 30_000;
     this.stallInterval = opts.stallInterval ?? 5_000;
@@ -129,7 +129,7 @@ export class Worker<T = unknown> extends Emitter {
         }
         const now = clock.now();
         const claimed = await this.adapter.claimNext(
-          this.tenant,
+          this.namespace,
           this.name,
           this.workerId,
           now,
@@ -166,7 +166,7 @@ export class Worker<T = unknown> extends Emitter {
 
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: record.tenant,
+      namespace: record.namespace,
       queue: record.queue,
       jobId: record.id,
       type: "active",
@@ -208,7 +208,7 @@ export class Worker<T = unknown> extends Emitter {
     await this.trim(record as JobRecord, "completed");
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: record.tenant,
+      namespace: record.namespace,
       queue: record.queue,
       jobId: record.id,
       type: "completed",
@@ -237,7 +237,7 @@ export class Worker<T = unknown> extends Emitter {
       await this.adapter.updateJob(record as JobRecord);
       await this.adapter.appendEvent({
         id: id("evt"),
-        tenant: record.tenant,
+        namespace: record.namespace,
         queue: record.queue,
         jobId: record.id,
         type: "delayed",
@@ -251,7 +251,7 @@ export class Worker<T = unknown> extends Emitter {
       await this.trim(record as JobRecord, "failed");
       await this.adapter.appendEvent({
         id: id("evt"),
-        tenant: record.tenant,
+        namespace: record.namespace,
         queue: record.queue,
         jobId: record.id,
         type: "failed",
@@ -267,24 +267,24 @@ export class Worker<T = unknown> extends Emitter {
   private async trim(record: JobRecord, status: "completed" | "failed") {
     const opt = status === "completed" ? record.opts.removeOnComplete : record.opts.removeOnFail;
     if (opt === true) {
-      await this.adapter.removeJob(record.tenant, record.queue, record.id);
+      await this.adapter.removeJob(record.namespace, record.queue, record.id);
       return;
     }
     if (typeof opt === "number") {
       const counts = await this.adapter.countJobs({
-        tenant: record.tenant,
+        namespace: record.namespace,
         queue: record.queue,
       });
       const extra = counts[status] - opt;
       if (extra > 0) {
-        await this.adapter.clean(record.tenant, record.queue, status, clock.now() + 1, extra);
+        await this.adapter.clean(record.namespace, record.queue, status, clock.now() + 1, extra);
       }
     }
   }
 
   private async onFinished(record: JobRecord, ok: boolean) {
     if (record.parentId && record.parentQueue) {
-      const parent = await this.adapter.getJob(record.tenant, record.parentQueue, record.parentId);
+      const parent = await this.adapter.getJob(record.namespace, record.parentQueue, record.parentId);
       if (parent) {
         if (!ok && record.opts.failParentOnFailure !== false) {
           parent.pendingChildren = Math.max(0, parent.pendingChildren - 1);
@@ -294,7 +294,7 @@ export class Worker<T = unknown> extends Emitter {
           await this.adapter.updateJob(parent);
           await this.adapter.appendEvent({
             id: id("evt"),
-            tenant: parent.tenant,
+            namespace: parent.namespace,
             queue: parent.queue,
             jobId: parent.id,
             type: "failed",
@@ -309,7 +309,7 @@ export class Worker<T = unknown> extends Emitter {
             await this.adapter.updateJob(parent);
             await this.adapter.appendEvent({
               id: id("evt"),
-              tenant: parent.tenant,
+              namespace: parent.namespace,
               queue: parent.queue,
               jobId: parent.id,
               type: "waiting",
@@ -331,7 +331,7 @@ export class Worker<T = unknown> extends Emitter {
       for (const job of stalled) {
         await this.adapter.appendEvent({
           id: id("evt"),
-          tenant: job.tenant,
+          namespace: job.namespace,
           queue: job.queue,
           jobId: job.id,
           type: "stalled",
@@ -355,10 +355,10 @@ export class Worker<T = unknown> extends Emitter {
     try {
       const due = await this.adapter.dueRepeatable(clock.now());
       for (const r of due) {
-        if (this.tenant !== "*" && r.tenant !== this.tenant) continue;
+        if (this.namespace !== "*" && r.namespace !== this.namespace) continue;
         if (this.name !== "*" && r.queue !== this.name) continue;
         const record = createRecord({
-          tenant: r.tenant,
+          namespace: r.namespace,
           queue: r.queue,
           name: r.name,
           data: r.data,
@@ -374,7 +374,7 @@ export class Worker<T = unknown> extends Emitter {
         }
         await this.adapter.appendEvent({
           id: id("evt"),
-          tenant: r.tenant,
+          namespace: r.namespace,
           queue: r.queue,
           jobId: record.id,
           type: "added",

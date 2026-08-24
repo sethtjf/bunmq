@@ -13,7 +13,7 @@ import { clock, id, nextCron } from "./util";
 
 export type QueueOptions = {
   adapter: Adapter;
-  tenant?: string;
+  namespace?: string;
   defaultJobOptions?: JobOptions;
   concurrency?: number | null;
 };
@@ -26,17 +26,17 @@ export type BulkJob<T = unknown> = {
 
 export class Queue<T = unknown> {
   readonly name: string;
-  readonly tenant: string;
+  readonly namespace: string;
   readonly adapter: Adapter;
   private defaults: JobOptions;
 
   constructor(name: string, opts: QueueOptions) {
     this.name = name;
-    this.tenant = opts.tenant ?? "default";
+    this.namespace = opts.namespace ?? "default";
     this.adapter = opts.adapter;
     this.defaults = opts.defaultJobOptions ?? {};
     void this.adapter.setQueueMeta({
-      tenant: this.tenant,
+      namespace: this.namespace,
       name: this.name,
       paused: false,
       concurrency: opts.concurrency ?? null,
@@ -49,7 +49,7 @@ export class Queue<T = unknown> {
       await this.addRepeatable(name, data, merged);
     }
     const record = createRecord({
-      tenant: merged.tenant ?? this.tenant,
+      namespace: merged.namespace ?? this.namespace,
       queue: this.name,
       name,
       data,
@@ -58,7 +58,7 @@ export class Queue<T = unknown> {
     const stored = (await this.adapter.addJob(record as JobRecord)) as JobRecord<T>;
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: stored.tenant,
+      namespace: stored.namespace,
       queue: stored.queue,
       jobId: stored.id,
       type: stored.status === "delayed" ? "delayed" : "added",
@@ -72,7 +72,7 @@ export class Queue<T = unknown> {
     const records = jobs.map((j) => {
       const merged: JobOptions = { ...this.defaults, ...j.opts };
       return createRecord({
-        tenant: merged.tenant ?? this.tenant,
+        namespace: merged.namespace ?? this.namespace,
         queue: this.name,
         name: j.name,
         data: j.data,
@@ -85,7 +85,7 @@ export class Queue<T = unknown> {
       stored.map((s) =>
         this.adapter.appendEvent({
           id: id("evt"),
-          tenant: s.tenant,
+          namespace: s.namespace,
           queue: s.queue,
           jobId: s.id,
           type: "added",
@@ -100,13 +100,13 @@ export class Queue<T = unknown> {
   private async addRepeatable(name: string, data: T, opts: JobOptions) {
     const repeat = opts.repeat!;
     const key =
-      repeat.key ?? `${this.tenant}:${this.name}:${name}:${repeat.cron ?? repeat.every ?? ""}`;
+      repeat.key ?? `${this.namespace}:${this.name}:${name}:${repeat.cron ?? repeat.every ?? ""}`;
     const now = clock.now();
     const next =
       repeat.cron != null ? nextCron(repeat.cron, now) : now + (repeat.every ?? 0);
     const rec: RepeatableRecord = {
       id: id("rep"),
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       name,
       data,
@@ -119,7 +119,7 @@ export class Queue<T = unknown> {
       next: repeat.immediately ? now : next,
       key,
     };
-    const existing = (await this.adapter.listRepeatable(this.tenant, this.name)).find(
+    const existing = (await this.adapter.listRepeatable(this.namespace, this.name)).find(
       (r) => r.key === key,
     );
     if (existing) rec.id = existing.id;
@@ -128,7 +128,7 @@ export class Queue<T = unknown> {
 
   async getJob(jobId: string): Promise<Job<T> | null> {
     if (!jobId) return null;
-    const row = await this.adapter.getJob(this.tenant, this.name, jobId);
+    const row = await this.adapter.getJob(this.namespace, this.name, jobId);
     return row ? new Job(row as JobRecord<T>, this.adapter) : null;
   }
 
@@ -138,7 +138,7 @@ export class Queue<T = unknown> {
     limit = 50,
   ): Promise<Job<T>[]> {
     const filter: JobFilter = {
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       status,
       start,
@@ -149,16 +149,16 @@ export class Queue<T = unknown> {
   }
 
   async getJobCounts() {
-    return this.adapter.countJobs({ tenant: this.tenant, queue: this.name });
+    return this.adapter.countJobs({ namespace: this.namespace, queue: this.name });
   }
 
   async pause(): Promise<void> {
-    const meta = await this.adapter.getQueueMeta(this.tenant, this.name);
+    const meta = await this.adapter.getQueueMeta(this.namespace, this.name);
     meta.paused = true;
     await this.adapter.setQueueMeta(meta);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       jobId: null,
       type: "paused",
@@ -168,12 +168,12 @@ export class Queue<T = unknown> {
   }
 
   async resume(): Promise<void> {
-    const meta = await this.adapter.getQueueMeta(this.tenant, this.name);
+    const meta = await this.adapter.getQueueMeta(this.namespace, this.name);
     meta.paused = false;
     await this.adapter.setQueueMeta(meta);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       jobId: null,
       type: "resumed",
@@ -183,18 +183,18 @@ export class Queue<T = unknown> {
   }
 
   async isPaused(): Promise<boolean> {
-    const meta = await this.adapter.getQueueMeta(this.tenant, this.name);
+    const meta = await this.adapter.getQueueMeta(this.namespace, this.name);
     return meta.paused;
   }
 
   async setConcurrency(n: number | null): Promise<void> {
-    const meta = await this.adapter.getQueueMeta(this.tenant, this.name);
+    const meta = await this.adapter.getQueueMeta(this.namespace, this.name);
     meta.concurrency = n;
     await this.adapter.setQueueMeta(meta);
   }
 
   async retry(jobId: string): Promise<Job<T>> {
-    const row = await this.adapter.getJob(this.tenant, this.name, jobId);
+    const row = await this.adapter.getJob(this.namespace, this.name, jobId);
     if (!row) throw new JobNotFoundError(jobId);
     row.status = "waiting";
     row.failedReason = null;
@@ -206,7 +206,7 @@ export class Queue<T = unknown> {
     await this.adapter.updateJob(row);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       jobId,
       type: "waiting",
@@ -217,10 +217,10 @@ export class Queue<T = unknown> {
   }
 
   async remove(jobId: string): Promise<void> {
-    await this.adapter.removeJob(this.tenant, this.name, jobId);
+    await this.adapter.removeJob(this.namespace, this.name, jobId);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.tenant,
+      namespace: this.namespace,
       queue: this.name,
       jobId,
       type: "removed",
@@ -230,7 +230,7 @@ export class Queue<T = unknown> {
   }
 
   async clean(status: JobStatus, graceMs = 0, limit = 1000): Promise<number> {
-    return this.adapter.clean(this.tenant, this.name, status, clock.now() - graceMs, limit);
+    return this.adapter.clean(this.namespace, this.name, status, clock.now() - graceMs, limit);
   }
 
   async obliterate(): Promise<void> {
@@ -242,12 +242,12 @@ export class Queue<T = unknown> {
       "failed",
       "waiting-children",
     ] as JobStatus[]) {
-      await this.adapter.clean(this.tenant, this.name, status, clock.now() + 1, 100_000);
+      await this.adapter.clean(this.namespace, this.name, status, clock.now() + 1, 100_000);
     }
   }
 
   async getRepeatable(): Promise<RepeatableRecord[]> {
-    return this.adapter.listRepeatable(this.tenant, this.name);
+    return this.adapter.listRepeatable(this.namespace, this.name);
   }
 
   async removeRepeatable(repeatableId: string): Promise<void> {
@@ -255,6 +255,6 @@ export class Queue<T = unknown> {
   }
 
   async meta(): Promise<QueueMeta> {
-    return this.adapter.getQueueMeta(this.tenant, this.name);
+    return this.adapter.getQueueMeta(this.namespace, this.name);
   }
 }

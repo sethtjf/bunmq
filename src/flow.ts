@@ -13,27 +13,27 @@ export type FlowNode<T = unknown> = {
 
 export type FlowProducerOptions = {
   adapter: Adapter;
-  tenant?: string;
+  namespace?: string;
 };
 
 export class FlowProducer {
   readonly adapter: Adapter;
-  readonly tenant: string;
+  readonly namespace: string;
 
   constructor(opts: FlowProducerOptions) {
     this.adapter = opts.adapter;
-    this.tenant = opts.tenant ?? "default";
+    this.namespace = opts.namespace ?? "default";
   }
 
   async add<T>(node: FlowNode<T>): Promise<{ job: Job<T>; children: Job[] }> {
-    const built = this.build(node, this.tenant);
+    const built = this.build(node, this.namespace);
     await this.adapter.addJobs(built.records);
     const ts = clock.now();
     await Promise.all(
       built.records.map((r) =>
         this.adapter.appendEvent({
           id: id("evt"),
-          tenant: r.tenant,
+          namespace: r.namespace,
           queue: r.queue,
           jobId: r.id,
           type: r.status === "waiting-children" ? "waiting" : "added",
@@ -49,12 +49,12 @@ export class FlowProducer {
     };
   }
 
-  private build(node: FlowNode, tenant: string): { records: JobRecord[]; root: JobRecord } {
-    const children = (node.children ?? []).map((c) => this.build(c, tenant));
+  private build(node: FlowNode, namespace: string): { records: JobRecord[]; root: JobRecord } {
+    const children = (node.children ?? []).map((c) => this.build(c, namespace));
     const childRecords = children.flatMap((c) => c.records);
     const roots = children.map((c) => c.root);
     const record = createRecord({
-      tenant: node.opts?.tenant ?? tenant,
+      namespace: node.opts?.namespace ?? namespace,
       queue: node.queueName,
       name: node.name,
       data: node.data,

@@ -60,27 +60,27 @@ const WORKFLOW_QUEUE = "__bunmq_workflow";
 
 export type OrchestratorOptions = {
   adapter: Adapter;
-  tenant?: string;
+  namespace?: string;
   concurrency?: number;
   autorun?: boolean;
 };
 
 export class Orchestrator {
   readonly adapter: Adapter;
-  readonly tenant: string;
+  readonly namespace: string;
   private defs = new Map<string, WorkflowDef<any>>();
   private worker: Worker;
   private runningCompensations = new Set<string>();
 
   constructor(opts: OrchestratorOptions) {
     this.adapter = opts.adapter;
-    this.tenant = opts.tenant ?? "default";
+    this.namespace = opts.namespace ?? "default";
     this.worker = new Worker(
       WORKFLOW_QUEUE,
       (job, ctx) => this.processStep(job, ctx.signal),
       {
         adapter: this.adapter,
-        tenant: this.tenant,
+        namespace: this.namespace,
         concurrency: opts.concurrency ?? 8,
         autorun: opts.autorun !== false,
       },
@@ -96,13 +96,13 @@ export class Orchestrator {
     return this;
   }
 
-  async run<TInput>(name: string, input: TInput, opts?: { tenant?: string }): Promise<WorkflowRecord> {
+  async run<TInput>(name: string, input: TInput, opts?: { namespace?: string }): Promise<WorkflowRecord> {
     const def = this.defs.get(name);
     if (!def) throw new WorkflowError(`Unknown workflow: ${name}`);
-    const tenant = opts?.tenant ?? this.tenant;
+    const namespace = opts?.namespace ?? this.namespace;
     const wf: WorkflowRecord = {
       id: id("wf"),
-      tenant,
+      namespace,
       name,
       status: "running",
       input,
@@ -124,7 +124,7 @@ export class Orchestrator {
   }
 
   async list(limit = 40): Promise<WorkflowRecord[]> {
-    return this.adapter.listWorkflows(this.tenant, limit);
+    return this.adapter.listWorkflows(this.namespace, limit);
   }
 
   async close(): Promise<void> {
@@ -146,7 +146,7 @@ export class Orchestrator {
   private async enqueueReady(def: WorkflowDef, wf: WorkflowRecord) {
     const ready = this.readySteps(def, wf);
     const inflight = await this.adapter.listJobs({
-      tenant: wf.tenant,
+      namespace: wf.namespace,
       queue: WORKFLOW_QUEUE,
       workflowId: wf.id,
       status: ["waiting", "delayed", "active"],
@@ -158,7 +158,7 @@ export class Orchestrator {
       const step = def.steps[key]!;
       jobs.push(
         createRecord({
-          tenant: wf.tenant,
+          namespace: wf.namespace,
           queue: WORKFLOW_QUEUE,
           name: `${def.name}:${key}`,
           data: { workflowId: wf.id, step: key, input: wf.input },
@@ -178,7 +178,7 @@ export class Orchestrator {
         await this.adapter.saveWorkflow(wf);
         await this.adapter.appendEvent({
           id: id("evt"),
-          tenant: wf.tenant,
+          namespace: wf.namespace,
           queue: WORKFLOW_QUEUE,
           jobId: wf.id,
           type: "workflow-completed",
@@ -241,7 +241,7 @@ export class Orchestrator {
       await this.adapter.saveWorkflow(wf);
       await this.adapter.appendEvent({
         id: id("evt"),
-        tenant: wf.tenant,
+        namespace: wf.namespace,
         queue: WORKFLOW_QUEUE,
         jobId: wf.id,
         type: "workflow-failed",
@@ -279,7 +279,7 @@ export class Orchestrator {
     }
     const step = def.steps[next]!;
     const job = createRecord({
-      tenant: wf.tenant,
+      namespace: wf.namespace,
       queue: WORKFLOW_QUEUE,
       name: `${def.name}:${next}:compensate`,
       data: { workflowId: wf.id, step: next, input: wf.input, compensate: true },

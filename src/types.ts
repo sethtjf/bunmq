@@ -36,7 +36,7 @@ export type JobOptions = {
   repeat?: RepeatOptions;
   jobId?: string;
   parent?: { id: string; queue: string };
-  tenant?: string;
+  namespace?: string;
   group?: GroupOptions;
   idempotencyKey?: string;
   failParentOnFailure?: boolean;
@@ -46,7 +46,7 @@ export type JobLog = { ts: number; message: string };
 
 export type JobRecord<T = unknown> = {
   id: string;
-  tenant: string;
+  namespace: string;
   queue: string;
   name: string;
   data: T;
@@ -79,7 +79,7 @@ export type JobRecord<T = unknown> = {
 
 export type RepeatableRecord = {
   id: string;
-  tenant: string;
+  namespace: string;
   queue: string;
   name: string;
   data: unknown;
@@ -94,7 +94,7 @@ export type RepeatableRecord = {
 };
 
 export type QueueMeta = {
-  tenant: string;
+  namespace: string;
   name: string;
   paused: boolean;
   concurrency: number | null;
@@ -119,7 +119,7 @@ export type QueueEventType =
 
 export type QueueEvent = {
   id: string;
-  tenant: string;
+  namespace: string;
   queue: string;
   jobId: string | null;
   type: QueueEventType;
@@ -128,7 +128,7 @@ export type QueueEvent = {
 };
 
 export type JobFilter = {
-  tenant?: string;
+  namespace?: string;
   queue?: string;
   status?: JobStatus | JobStatus[];
   ids?: string[];
@@ -139,12 +139,12 @@ export type JobFilter = {
 };
 
 export type CountFilter = {
-  tenant?: string;
+  namespace?: string;
   queue?: string;
 };
 
 export type EventFilter = {
-  tenant?: string;
+  namespace?: string;
   queue?: string;
   type?: QueueEventType | QueueEventType[];
   jobId?: string;
@@ -160,7 +160,7 @@ export type WorkflowStatus =
 
 export type WorkflowRecord = {
   id: string;
-  tenant: string;
+  namespace: string;
   name: string;
   status: WorkflowStatus;
   input: unknown;
@@ -173,7 +173,7 @@ export type WorkflowRecord = {
   finishedAt: number | null;
 };
 
-export type TenantScope = string | "*";
+export type NamespaceScope = string | "*";
 
 export const JOB_STATUSES: JobStatus[] = [
   "waiting",

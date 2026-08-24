@@ -1,7 +1,7 @@
 {
   "name": "bunmq",
   "version": "0.1.0",
-  "description": "Durable queues for Bun. Simple, extensible, multi-tenant.",
+  "description": "Durable queues for Bun. Simple, extensible, isolated by namespace.",
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
@@ -33,7 +33,7 @@
     "postgres",
     "redis",
     "azure",
-    "multi-tenant"
+    "namespace"
   ],
   "engines": {
     "bun": ">=1.1.0"

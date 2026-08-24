@@ -18,8 +18,8 @@ export class Job<T = unknown> {
   get queue() {
     return this.record.queue;
   }
-  get tenant() {
-    return this.record.tenant;
+  get namespace() {
+    return this.record.namespace;
   }
   get data(): T {
     return this.record.data;
@@ -48,7 +48,7 @@ export class Job<T = unknown> {
     await this.adapter.updateJob(this.record as JobRecord);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.record.tenant,
+      namespace: this.record.namespace,
       queue: this.record.queue,
       jobId: this.record.id,
       type: "progress",
@@ -63,7 +63,7 @@ export class Job<T = unknown> {
     await this.adapter.updateJob(this.record as JobRecord);
     await this.adapter.appendEvent({
       id: id("evt"),
-      tenant: this.record.tenant,
+      namespace: this.record.namespace,
       queue: this.record.queue,
       jobId: this.record.id,
       type: "log",
@@ -74,7 +74,7 @@ export class Job<T = unknown> {
 
   async extendLock(ms: number, token: string): Promise<void> {
     const ok = await this.adapter.renewLock(
-      this.record.tenant,
+      this.record.namespace,
       this.record.queue,
       this.record.id,
       token,
@@ -84,7 +84,7 @@ export class Job<T = unknown> {
   }
 
   async refresh(): Promise<this> {
-    const next = await this.adapter.getJob(this.record.tenant, this.record.queue, this.record.id);
+    const next = await this.adapter.getJob(this.record.namespace, this.record.queue, this.record.id);
     if (!next) throw new JobNotFoundError(this.record.id);
     this.record = next as JobRecord<T>;
     return this;
@@ -96,7 +96,7 @@ export class Job<T = unknown> {
 }
 
 export function createRecord<T>(input: {
-  tenant: string;
+  namespace: string;
   queue: string;
   name: string;
   data: T;
@@ -110,7 +110,7 @@ export function createRecord<T>(input: {
   const status = delay > 0 ? "delayed" : "waiting";
   return {
     id: input.opts.jobId ?? id("job"),
-    tenant: input.tenant,
+    namespace: input.namespace,
     queue: input.queue,
     name: input.name,
     data: input.data,

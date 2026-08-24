@@ -17,8 +17,8 @@ import { asArray, clone, Mutex, qk } from "./util";
 
 type GroupKey = string;
 
-function gk(tenant: string, queue: string, groupId: string): GroupKey {
-  return `${tenant}::${queue}::${groupId}`;
+function gk(namespace: string, queue: string, groupId: string): GroupKey {
+  return `${namespace}::${queue}::${groupId}`;
 }
 
 export class MemoryAdapter extends Emitter implements Adapter {
@@ -34,12 +34,12 @@ export class MemoryAdapter extends Emitter implements Adapter {
   private eventCap = 800;
   private idIndex = new Map<string, string>(); // job.id -> store key
 
-  private key(tenant: string, queue: string, id: string) {
-    return `${tenant}::${queue}::${id}`;
+  private key(namespace: string, queue: string, id: string) {
+    return `${namespace}::${queue}::${id}`;
   }
 
   private store(job: JobRecord) {
-    const k = this.key(job.tenant, job.queue, job.id);
+    const k = this.key(job.namespace, job.queue, job.id);
     this.jobs.set(k, job);
     this.idIndex.set(job.id, k);
   }
@@ -56,7 +56,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
     if (job.idempotencyKey) {
       for (const existing of this.jobs.values()) {
         if (
-          existing.tenant === job.tenant &&
+          existing.namespace === job.namespace &&
           existing.queue === job.queue &&
           existing.idempotencyKey === job.idempotencyKey &&
           (existing.status === "waiting" ||
@@ -70,19 +70,19 @@ export class MemoryAdapter extends Emitter implements Adapter {
     }
     const copy = clone(job);
     this.store(copy);
-    const q = this.ensureQueue(copy.tenant, copy.queue);
-    this.queues.set(qk(copy.tenant, copy.queue), q);
+    const q = this.ensureQueue(copy.namespace, copy.queue);
+    this.queues.set(qk(copy.namespace, copy.queue), q);
     return clone(copy);
   }
 
-  async getJob(tenant: string, queue: string, id: string): Promise<JobRecord | null> {
-    const row = this.jobs.get(this.key(tenant, queue, id));
+  async getJob(namespace: string, queue: string, id: string): Promise<JobRecord | null> {
+    const row = this.jobs.get(this.key(namespace, queue, id));
     return row ? clone(row) : null;
   }
 
   async updateJob(job: JobRecord): Promise<void> {
     return this.mutex.run(() => {
-      const k = this.key(job.tenant, job.queue, job.id);
+      const k = this.key(job.namespace, job.queue, job.id);
       const prev = this.jobs.get(k);
       if (!prev) return;
       this.adjustGroup(prev, job);
@@ -90,9 +90,9 @@ export class MemoryAdapter extends Emitter implements Adapter {
     });
   }
 
-  async removeJob(tenant: string, queue: string, id: string): Promise<void> {
+  async removeJob(namespace: string, queue: string, id: string): Promise<void> {
     return this.mutex.run(() => {
-      const k = this.key(tenant, queue, id);
+      const k = this.key(namespace, queue, id);
       const prev = this.jobs.get(k);
       if (prev) {
         this.adjustGroup(prev, null);
@@ -103,7 +103,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
   }
 
   async claimNext(
-    tenant: string | "*",
+    namespace: string | "*",
     queue: string,
     workerId: string,
     now: number,
@@ -113,8 +113,8 @@ export class MemoryAdapter extends Emitter implements Adapter {
       const candidates: JobRecord[] = [];
       for (const job of this.jobs.values()) {
         if (queue !== "*" && job.queue !== queue) continue;
-        if (tenant !== "*" && job.tenant !== tenant) continue;
-        const meta = this.ensureQueue(job.tenant, job.queue);
+        if (namespace !== "*" && job.namespace !== namespace) continue;
+        const meta = this.ensureQueue(job.namespace, job.queue);
         if (meta.paused) continue;
         if (job.status === "delayed" && job.processAt <= now) {
           job.status = "waiting";
@@ -128,19 +128,19 @@ export class MemoryAdapter extends Emitter implements Adapter {
       const activeByQueue = new Map<string, number>();
       for (const job of this.jobs.values()) {
         if (job.status === "active") {
-          const k = qk(job.tenant, job.queue);
+          const k = qk(job.namespace, job.queue);
           activeByQueue.set(k, (activeByQueue.get(k) ?? 0) + 1);
         }
       }
 
       for (const job of candidates) {
-        const meta = this.ensureQueue(job.tenant, job.queue);
+        const meta = this.ensureQueue(job.namespace, job.queue);
         if (meta.concurrency != null) {
-          const active = activeByQueue.get(qk(job.tenant, job.queue)) ?? 0;
+          const active = activeByQueue.get(qk(job.namespace, job.queue)) ?? 0;
           if (active >= meta.concurrency) continue;
         }
         if (job.groupId) {
-          const g = this.groupActive.get(gk(job.tenant, job.queue, job.groupId)) ?? 0;
+          const g = this.groupActive.get(gk(job.namespace, job.queue, job.groupId)) ?? 0;
           if (g >= job.groupMax) continue;
         }
         job.status = "active";
@@ -149,7 +149,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
         job.lockUntil = lockUntil;
         job.lockToken = workerId;
         if (job.groupId) {
-          const key = gk(job.tenant, job.queue, job.groupId);
+          const key = gk(job.namespace, job.queue, job.groupId);
           this.groupActive.set(key, (this.groupActive.get(key) ?? 0) + 1);
         }
         return clone(job);
@@ -159,14 +159,14 @@ export class MemoryAdapter extends Emitter implements Adapter {
   }
 
   async renewLock(
-    tenant: string,
+    namespace: string,
     queue: string,
     id: string,
     token: string,
     lockUntil: number,
   ): Promise<boolean> {
     return this.mutex.run(() => {
-      const job = this.jobs.get(this.key(tenant, queue, id));
+      const job = this.jobs.get(this.key(namespace, queue, id));
       if (!job || job.lockToken !== token || job.status !== "active") return false;
       job.lockUntil = lockUntil;
       return true;
@@ -177,7 +177,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
     const statuses = asArray(filter.status);
     const rows: JobRecord[] = [];
     for (const job of this.jobs.values()) {
-      if (filter.tenant && job.tenant !== filter.tenant) continue;
+      if (filter.namespace && job.namespace !== filter.namespace) continue;
       if (filter.queue && job.queue !== filter.queue) continue;
       if (statuses && !statuses.includes(job.status)) continue;
       if (filter.ids && !filter.ids.includes(job.id)) continue;
@@ -194,28 +194,28 @@ export class MemoryAdapter extends Emitter implements Adapter {
   async countJobs(filter: CountFilter): Promise<Record<JobStatus, number>> {
     const counts = emptyCounts();
     for (const job of this.jobs.values()) {
-      if (filter.tenant && job.tenant !== filter.tenant) continue;
+      if (filter.namespace && job.namespace !== filter.namespace) continue;
       if (filter.queue && job.queue !== filter.queue) continue;
       counts[job.status] += 1;
     }
     return counts;
   }
 
-  async getQueueMeta(tenant: string, queue: string): Promise<QueueMeta> {
-    return clone(this.ensureQueue(tenant, queue));
+  async getQueueMeta(namespace: string, queue: string): Promise<QueueMeta> {
+    return clone(this.ensureQueue(namespace, queue));
   }
 
   async setQueueMeta(meta: QueueMeta): Promise<void> {
-    this.queues.set(qk(meta.tenant, meta.name), { ...meta });
+    this.queues.set(qk(meta.namespace, meta.name), { ...meta });
   }
 
-  async listQueues(tenant?: string): Promise<QueueMeta[]> {
+  async listQueues(namespace?: string): Promise<QueueMeta[]> {
     const out: QueueMeta[] = [];
     for (const q of this.queues.values()) {
-      if (tenant && q.tenant !== tenant) continue;
+      if (namespace && q.namespace !== namespace) continue;
       out.push(clone(q));
     }
-    out.sort((a, b) => a.name.localeCompare(b.name) || a.tenant.localeCompare(b.tenant));
+    out.sort((a, b) => a.name.localeCompare(b.name) || a.namespace.localeCompare(b.namespace));
     return out;
   }
 
@@ -223,10 +223,10 @@ export class MemoryAdapter extends Emitter implements Adapter {
     this.repeatable.set(job.id, clone(job));
   }
 
-  async listRepeatable(tenant: string, queue?: string): Promise<RepeatableRecord[]> {
+  async listRepeatable(namespace: string, queue?: string): Promise<RepeatableRecord[]> {
     const out: RepeatableRecord[] = [];
     for (const r of this.repeatable.values()) {
-      if (r.tenant !== tenant) continue;
+      if (r.namespace !== namespace) continue;
       if (queue && r.queue !== queue) continue;
       out.push(clone(r));
     }
@@ -253,7 +253,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
   async listEvents(filter: EventFilter): Promise<QueueEvent[]> {
     const types = asArray(filter.type);
     const rows = this.events.filter((e) => {
-      if (filter.tenant && e.tenant !== filter.tenant) return false;
+      if (filter.namespace && e.namespace !== filter.namespace) return false;
       if (filter.queue && e.queue !== filter.queue) return false;
       if (types && !types.includes(e.type)) return false;
       if (filter.jobId && e.jobId !== filter.jobId) return false;
@@ -282,7 +282,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
   }
 
   async clean(
-    tenant: string,
+    namespace: string,
     queue: string,
     status: JobStatus,
     olderThan: number,
@@ -291,7 +291,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
     return this.mutex.run(() => {
       const victims: string[] = [];
       for (const [k, job] of this.jobs) {
-        if (job.tenant !== tenant || job.queue !== queue) continue;
+        if (job.namespace !== namespace || job.queue !== queue) continue;
         if (job.status !== status) continue;
         if ((job.finishedOn ?? job.timestamp) > olderThan) continue;
         victims.push(k);
@@ -318,9 +318,9 @@ export class MemoryAdapter extends Emitter implements Adapter {
     return row ? clone(row) : null;
   }
 
-  async listWorkflows(tenant: string, limit = 50): Promise<WorkflowRecord[]> {
+  async listWorkflows(namespace: string, limit = 50): Promise<WorkflowRecord[]> {
     const rows = [...this.workflows.values()]
-      .filter((w) => w.tenant === tenant)
+      .filter((w) => w.namespace === namespace)
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, limit);
     return rows.map(clone);
@@ -362,11 +362,11 @@ export class MemoryAdapter extends Emitter implements Adapter {
     };
   }
 
-  private ensureQueue(tenant: string, name: string): QueueMeta {
-    const k = qk(tenant, name);
+  private ensureQueue(namespace: string, name: string): QueueMeta {
+    const k = qk(namespace, name);
     let q = this.queues.get(k);
     if (!q) {
-      q = { tenant, name, paused: false, concurrency: null };
+      q = { namespace, name, paused: false, concurrency: null };
       this.queues.set(k, q);
     }
     return q;
@@ -376,7 +376,7 @@ export class MemoryAdapter extends Emitter implements Adapter {
     const was = prev.status === "active" && prev.groupId;
     const now = next && next.status === "active" && next.groupId;
     if (was && !now) {
-      const key = gk(prev.tenant, prev.queue, prev.groupId!);
+      const key = gk(prev.namespace, prev.queue, prev.groupId!);
       const n = (this.groupActive.get(key) ?? 1) - 1;
       if (n <= 0) this.groupActive.delete(key);
       else this.groupActive.set(key, n);
@@ -398,13 +398,13 @@ export class MemoryAdapter extends Emitter implements Adapter {
     this.events = [];
     this.groupActive.clear();
     for (const j of data.jobs ?? []) this.store(clone(j));
-    for (const q of data.queues ?? []) this.queues.set(qk(q.tenant, q.name), clone(q));
+    for (const q of data.queues ?? []) this.queues.set(qk(q.namespace, q.name), clone(q));
     for (const w of data.workflows ?? []) this.workflows.set(w.id, clone(w));
     for (const r of data.repeatable ?? []) this.repeatable.set(r.id, clone(r));
     this.events = (data.events ?? []).map(clone);
     for (const j of this.jobs.values()) {
       if (j.status === "active" && j.groupId) {
-        const key = gk(j.tenant, j.queue, j.groupId);
+        const key = gk(j.namespace, j.queue, j.groupId);
         this.groupActive.set(key, (this.groupActive.get(key) ?? 0) + 1);
       }
     }
